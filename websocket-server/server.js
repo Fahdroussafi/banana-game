@@ -1,4 +1,3 @@
-// server.js
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
@@ -8,22 +7,22 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Store connected clients
-const clients = new Set();
-const playerIds = new Set();
+// Store connected clients and their player IDs
+const clients = new Map();
+const playerPositions = new Map();
+
 wss.on("connection", (ws) => {
-  clients.add(ws);
-  console.log(clients.size);
   console.log("Client connected");
 
   ws.on("message", (message) => {
     const data = JSON.parse(message);
+    console.log("Received message:", data);
 
-    console.log(data);
     if (data.type === "ASSIGN_PLAYER_ID_REQUEST") {
-      // Respond to the client with the assigned player ID
       const playerID = uuidv4();
-      playerIds.add(playerID);
+      clients.set(ws, playerID);
+      playerPositions.set(playerID, { x: 0, y: 0 });
+
       ws.send(
         JSON.stringify({
           type: "ASSIGN_PLAYER_ID_RESPONSE",
@@ -31,18 +30,12 @@ wss.on("connection", (ws) => {
         })
       );
 
-      const playerList = Array.from(playerIds).map((playerId) => ({
-        playerId,
-        playerCount: clients.size,
-      }));
-      ws.send(
-        JSON.stringify({
-          type: "UPDATE_PLAYER_LIST",
-          playerList,
-        })
-      );
+      updatePlayerList();
+    } else if (data.type === "UPDATE_PLAYER_POSITION") {
+      const { playerId, position } = data;
+      playerPositions.set(playerId, position);
+      broadcastPlayerPositions();
     } else {
-      // Broadcast received message to all clients except the sender
       wss.clients.forEach((client) => {
         if (client !== ws && client.readyState === WebSocket.OPEN) {
           client.send(message);
@@ -51,12 +44,54 @@ wss.on("connection", (ws) => {
     }
   });
 
-  ws.on("close", (code, message) => {
-    console.log("message on close", code, message.toJSON());
-    clients.delete(ws);
+  ws.on("close", () => {
     console.log("Client disconnected");
+    const playerId = clients.get(ws);
+    clients.delete(ws);
+    playerPositions.delete(playerId);
+    updatePlayerList();
+    broadcastPlayerPositions();
+  });
+
+  ws.on("error", (error) => {
+    console.error("WebSocket error:", error);
   });
 });
+
+const updatePlayerList = () => {
+  const playerList = Array.from(clients.values()).map((playerId) => ({
+    playerId,
+  }));
+
+  const updateMessage = JSON.stringify({
+    type: "UPDATE_PLAYER_LIST",
+    playerList,
+  });
+
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(updateMessage);
+    }
+  });
+};
+
+const broadcastPlayerPositions = () => {
+  const positionsMessage = JSON.stringify({
+    type: "UPDATE_PLAYER_POSITIONS",
+    positions: Array.from(playerPositions.entries()).map(
+      ([playerId, position]) => ({
+        playerId,
+        position,
+      })
+    ),
+  });
+
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(positionsMessage);
+    }
+  });
+};
 
 server.listen(8080, () => {
   console.log("Server started on port 8080");

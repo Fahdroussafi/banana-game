@@ -8,7 +8,7 @@ import {
 } from "@headlessui/react";
 import { useEffect, useRef, useState } from "react";
 
-const STEP = 10;
+let STEP = 10;
 const BANANA_SIZE = 100;
 const MIN_DISTANCE_FROM_PLAYER = 200;
 const MIN_DISTANCE_BETWEEN_BANANAS = 200;
@@ -21,6 +21,7 @@ const App = () => {
   const [isGameOver, setIsGameOver] = useState(false);
   const [plusThreeElement, setPlusThreeElement] = useState(false);
   const timerRef = useRef(null);
+  const [step, setStep] = useState(STEP);
 
   const [ws, setWs] = useState(null);
 
@@ -61,8 +62,9 @@ const App = () => {
     };
 
     return () => {
-      console.log("Returning from useEffect");
-      socket.close();
+      if (socket.readyState === 1) {
+        socket.close();
+      }
     };
   }, []);
 
@@ -77,33 +79,47 @@ const App = () => {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
+      let newPosition = { ...playerPosition };
       switch (event.key) {
         case "ArrowUp":
-          setPlayerPosition((prevPosition) => ({
-            ...prevPosition,
-            y: Math.max(0, prevPosition.y - STEP),
-          }));
+          newPosition = {
+            ...newPosition,
+            y: Math.max(0, newPosition.y - step),
+          };
           break;
         case "ArrowDown":
-          setPlayerPosition((prevPosition) => ({
-            ...prevPosition,
-            y: Math.min(window.innerHeight - 120, prevPosition.y + STEP),
-          }));
+          newPosition = {
+            ...newPosition,
+            y: Math.min(window.innerHeight - 120, newPosition.y + step),
+          };
           break;
         case "ArrowLeft":
-          setPlayerPosition((prevPosition) => ({
-            ...prevPosition,
-            x: Math.max(0, prevPosition.x - STEP),
-          }));
+          newPosition = {
+            ...newPosition,
+            x: Math.max(0, newPosition.x - step),
+          };
           break;
         case "ArrowRight":
-          setPlayerPosition((prevPosition) => ({
-            ...prevPosition,
-            x: Math.min(window.innerWidth - 120, prevPosition.x + STEP),
-          }));
+          newPosition = {
+            ...newPosition,
+            x: Math.min(window.innerWidth - 120, newPosition.x + step),
+          };
           break;
         default:
           break;
+      }
+
+      setPlayerPosition(newPosition);
+
+      // Send the new position to the server
+      if (ws && playerId) {
+        ws.send(
+          JSON.stringify({
+            type: "UPDATE_PLAYER_POSITION",
+            playerId,
+            position: newPosition,
+          })
+        );
       }
     };
 
@@ -179,36 +195,41 @@ const App = () => {
   }, [playerPosition, bananas]);
 
   const InjectBanana = () => {
-    let playerPos = playerPosition;
     let newBananas = [];
-
-    let top, left;
-    let isPositionValid = false;
-
-    while (!isPositionValid) {
-      top = Math.floor(Math.random() * (window.innerHeight - BANANA_SIZE));
-      left = Math.floor(Math.random() * (window.innerWidth - BANANA_SIZE));
-      isPositionValid = true;
+    for (let i = 0; i < 1; i++) {
+      let banana = {
+        x: Math.random() * window.innerWidth,
+        y: Math.random() * window.innerHeight,
+      };
 
       if (
-        Math.abs(playerPos.x - left) < MIN_DISTANCE_FROM_PLAYER &&
-        Math.abs(playerPos.y - top) < MIN_DISTANCE_FROM_PLAYER
+        Math.abs(banana.x - playerPosition.x) < MIN_DISTANCE_FROM_PLAYER &&
+        Math.abs(banana.y - playerPosition.y) < MIN_DISTANCE_FROM_PLAYER
       ) {
-        isPositionValid = false;
+        banana = {
+          x: Math.random() * window.innerWidth,
+          y: Math.random() * window.innerHeight,
+        };
       }
 
-      for (const banana of bananas) {
-        if (
-          Math.abs(banana.x - left) < MIN_DISTANCE_BETWEEN_BANANAS &&
-          Math.abs(banana.y - top) < MIN_DISTANCE_BETWEEN_BANANAS
-        ) {
-          isPositionValid = false;
-          break;
+      if (i !== 0) {
+        for (let j = 0; j < newBananas.length; j++) {
+          if (
+            Math.abs(banana.x - newBananas[j].x) <
+              MIN_DISTANCE_BETWEEN_BANANAS &&
+            Math.abs(banana.y - newBananas[j].y) < MIN_DISTANCE_BETWEEN_BANANAS
+          ) {
+            banana = {
+              x: Math.random() * window.innerWidth,
+              y: Math.random() * window.innerHeight,
+            };
+          }
         }
       }
 
-      newBananas.push({ x: left, y: top });
+      newBananas.push(banana);
     }
+
     setBananas(newBananas);
   };
 
@@ -234,6 +255,38 @@ const App = () => {
       });
     }, 1000);
   };
+
+  // increase step by 10 every 5 score
+  useEffect(() => {
+    if (score % 5 === 0 && score !== 0) {
+      setStep((prevStep) => prevStep + 20);
+    }
+  }, [score]);
+
+  useEffect(() => {
+    if (ws) {
+      ws.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        console.log("Received message:", message);
+
+        if (message.type === "ASSIGN_PLAYER_ID_RESPONSE") {
+          setPlayerId(message.playerId);
+        } else if (message.type === "UPDATE_PLAYER_LIST") {
+          setPlayerList(message.playerList);
+        } else if (message.type === "UPDATE_PLAYER_POSITIONS") {
+          const newPositions = message.positions.reduce(
+            (acc, { playerId, position }) => {
+              acc[playerId] = position;
+              return acc;
+            },
+            {}
+          );
+          setPlayerList(newPositions);
+        }
+      };
+    }
+  }, [ws]);
+
   return (
     <>
       {playerId ? (
@@ -244,37 +297,27 @@ const App = () => {
                 Score: {score}
               </div>
               <div className="text-center mt-2 rounded-xl bg-black text-white p-3 size-20 w-36 shadow-lg">
+                {/* // show same time in all players */}
                 Time: {timeRemaining}{" "}
                 <span className="text-green-500 font-bold text-base">
                   {plusThreeElement ? "+3" : ""}
                 </span>
               </div>
             </div>
-            {playerList &&
-              playerList.length > 0 &&
-              playerList.map((player, index) => {
-                return (
-                  <img
-                    className="item"
-                    src="/avatar.png"
-                    key={player.playerId}
-                    id={player.playerId}
-                    alt="Monkey"
-                    style={{
-                      top:
-                        Math.max(
-                          0,
-                          Math.min(playerPosition.y, window.innerWidth - 50)
-                        ) +
-                        index * 50,
-                      left: Math.max(
-                        0,
-                        Math.min(playerPosition.x, window.innerWidth - 50)
-                      ),
-                    }}
-                  />
-                );
-              })}
+            {Object.entries(playerList).map(([id, position]) => (
+              <img
+                className="item"
+                src="/avatar.png"
+                key={id}
+                id={id}
+                alt="Monkey"
+                style={{
+                  top: position.y,
+                  left: position.x,
+                  position: "absolute",
+                }}
+              />
+            ))}
 
             {bananas.map((banana, index) => (
               <img
@@ -331,7 +374,7 @@ const App = () => {
           </div>
         </div>
       ) : (
-        <div className="flex items-center justify-center h-screen">
+        <div className="bg-gray-600 flex items-center justify-center h-screen">
           <Button
             onClick={handleStartGame}
             className="inline-flex items-center gap-2 rounded-md bg-blue-600 py-2 px-4 text-sm font-semibold text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400">
